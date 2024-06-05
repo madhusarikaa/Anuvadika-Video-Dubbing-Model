@@ -1,0 +1,138 @@
+import os
+import ffmpeg
+from google.cloud import speech_v1p1beta1 as speech
+from google.cloud import translate_v2 as translate
+from google.cloud import texttospeech
+import subprocess
+
+# Paths
+input_video_path = 'myvideo.mp4'
+audio_path = 'my_audio5.wav'
+translated_audio_path = 'my_translated_audio.mp3'
+output_video_path = 'my_dubbed_video5.mp4'
+
+# Set up Google Cloud credentials
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = "/Users/madhupandey/Downloads/neural-myth-425201-c0-24ecff4fb31b.json"
+
+# Supported languages with corresponding voices
+supported_languages = {
+    'en': {'language': 'English', 'voice': 'en-US-Wavenet-D'},
+    'es': {'language': 'Spanish', 'voice': 'es-ES-Standard-A'},
+    'fr': {'language': 'French', 'voice': 'fr-FR-Standard-A'},
+    'de': {'language': 'German', 'voice': 'de-DE-Standard-A'},
+    'hi': {'language': 'Hindi', 'voice': 'hi-IN-Standard-A'},
+    'zh': {'language': 'Chinese', 'voice': 'zh-CN-Standard-A'},
+    'ja': {'language': 'Japanese', 'voice': 'ja-JP-Standard-A'},
+    'ru': {'language': 'Russian', 'voice': 'ru-RU-Standard-A'},
+    'ar': {'language': 'Arabic', 'voice': 'ar-XA-Standard-A'},
+    'pt': {'language': 'Portuguese', 'voice': 'pt-BR-Standard-A'}
+}
+
+def choose_language(prompt):
+    print(prompt)
+    for code, language_data in supported_languages.items():
+        print(f"{code}: {language_data['language']}")
+    
+    selected_code = input("Enter the language code: ").strip()
+    
+    if selected_code in supported_languages:
+        return selected_code
+    else:
+        print("Invalid selection. Please try again.")
+        return choose_language(prompt)
+
+def extract_audio(video_path, audio_path):
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(f"The input video file {video_path} does not exist.")
+    try:
+        ffmpeg.input(video_path).output(audio_path, ac=1, ar=16000).overwrite_output().run()
+    except ffmpeg.Error as e:
+        print(f"Error extracting audio: {e}")
+        raise
+
+def speech_to_text(audio_path, language_code):
+    client = speech.SpeechClient()
+    with open(audio_path, 'rb') as audio_file:
+        content = audio_file.read()
+    audio = speech.RecognitionAudio(content=content)
+    config = speech.RecognitionConfig(language_code=language_code)
+    response = client.recognize(config=config, audio=audio)
+    
+    if not response.results:
+        raise ValueError("No speech recognized in the audio file.")
+    
+    transcript = response.results[0].alternatives[0].transcript
+    return transcript
+
+def translate_text(text, target_language):
+    client = translate.Client()
+    translation = client.translate(text, target_language=target_language)
+    return translation['translatedText']
+
+def text_to_speech(text, output_file_path, language_code, voice_name):
+    client = texttospeech.TextToSpeechClient()
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+    voice_params = texttospeech.VoiceSelectionParams(
+        language_code=language_code, name=voice_name
+    )
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3
+    )
+    response = client.synthesize_speech(
+        input=synthesis_input, voice=voice_params, audio_config=audio_config
+    )
+    with open(output_file_path, 'wb') as out:
+        out.write(response.audio_content)
+    print(f'Audio content written to file {output_file_path}')
+
+def merge_audio_video(input_video_path, translated_audio_path, output_video_path):
+    try:
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-y',  # Add the -y flag here as well to overwrite output file without prompt
+            '-i', input_video_path,
+            '-i', translated_audio_path,
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-strict', 'experimental',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            output_video_path
+        ]
+        subprocess.run(ffmpeg_cmd, check=True)
+        print(f"Dubbed video saved to: {output_video_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error merging audio with video: {e}")
+
+# Main workflow
+source_language_code = choose_language("Please choose the source language:")
+target_language_code = choose_language("Please choose the target language:")
+
+print(f"Selected source language: {supported_languages[source_language_code]['language']}")
+print(f"Selected target language: {supported_languages[target_language_code]['language']}")
+
+# Extract audio from video
+extract_audio(input_video_path, audio_path)
+print(f"Audio extracted to {audio_path}")
+
+try:
+    # Convert speech to text
+    transcript = speech_to_text(audio_path, language_code=source_language_code)
+    print(f"Transcript ({supported_languages[source_language_code]['language']}): {transcript}")
+
+    # Translate transcript to target language
+    translated_transcript = translate_text(transcript, target_language=target_language_code)
+    print(f"Translated Transcript ({supported_languages[target_language_code]['language']}): {translated_transcript}")
+
+    # Convert translated transcript to speech
+    text_to_speech(translated_transcript, translated_audio_path, language_code=target_language_code, voice_name=supported_languages[target_language_code]['voice'])
+
+    print(f"Translated audio saved to: {translated_audio_path}")
+
+    # Merge translated audio with original video
+    merge_audio_video(input_video_path, translated_audio_path, output_video_path)
+
+except ValueError as e:
+    print(f"Error: {e}")
+except Exception as e:
+    print(f"An unexpected error occurred: {e}")
